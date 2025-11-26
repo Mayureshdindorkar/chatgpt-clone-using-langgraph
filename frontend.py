@@ -2,15 +2,72 @@ import streamlit as st
 # When we press enter, the whole python script is rerun by sreamlit from top to bottom.
 # st.session_state is a dictionary, which dont get erase when we press enter.
 # It gets erased only when we manually refresh the page manually.
-from backend import chatbot
+from backend import chatbot, retrieve_all_unique_threads_from_db
 from langchain_core.messages import HumanMessage
-CONFIG = {'configurable': {'thread_id': 'thread_1'}}
+import uuid
 
+############## Utility functions ############
+def generate_unique_thread_id():
+    thread_id = uuid.uuid4()
+    return thread_id
+
+def reset_chat():
+    thread_id = generate_unique_thread_id()
+    st.session_state['thread_id'] = thread_id
+    add_thread_id_to_threads_list(st.session_state['thread_id'])
+    st.session_state['message_history'] = []
+
+def add_thread_id_to_threads_list(thread_id):
+    if thread_id not in st.session_state['threads_list']:
+        st.session_state['threads_list'].append(thread_id)
+
+def load_chat_history_based_on_thread_id(thread_id):
+    state = chatbot.get_state({'configurable': {'thread_id': thread_id}})
+    if state and state.values:
+        return state.values.get('messages', [])
+    return []
+#############################################
+
+######## Storing the session state ##########
 # Checking whether session_state dict contains a kay of name 'message_history'
 if 'message_history' not in st.session_state:
     st.session_state['message_history'] = []
 
-# Showing the conversation history on page
+if 'thread_id' not in st.session_state:
+    st.session_state['thread_id'] = generate_unique_thread_id()
+
+if 'threads_list' not in st.session_state:
+    st.session_state['threads_list'] = retrieve_all_unique_threads_from_db()
+
+add_thread_id_to_threads_list(st.session_state['thread_id'])
+#############################################
+
+################## Side bar ##################
+st.sidebar.title('LangGraph UI')
+
+if st.sidebar.button('New Chat'):
+    reset_chat()
+
+st.sidebar.header('My Conversations')
+
+for thread_id in st.session_state['threads_list'][::-1]:
+    if st.sidebar.button(str(thread_id)):
+        st.session_state['thread_id'] = thread_id
+        messages = load_chat_history_based_on_thread_id(thread_id)
+
+        temp_messages = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                role = 'user'
+            else:
+                role = 'assistant'
+            temp_messages.append({"role": role, "content": msg.content})
+        st.session_state['message_history'] = temp_messages
+
+##############################################
+
+############# Chat section ###################
+# Showing the past chat history on page
 for message in st.session_state['message_history']:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -22,6 +79,8 @@ if user_input:
     st.session_state['message_history'].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
+
+    CONFIG = {'configurable': {'thread_id': st.session_state['thread_id']}}
 
     # Without streaming
     # Getting AI response from backend
@@ -42,3 +101,4 @@ if user_input:
             )
         )
     st.session_state['message_history'].append({"role": "assistant", "content": ai_message})
+##############################################
