@@ -6,40 +6,14 @@ from langgraph.graph.message import add_messages
 from dotenv import load_dotenv
 import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver  # Saves the State in Sqlite DB
+from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_core.tools import tool
+import requests
+
 load_dotenv()
 
-# Get LLM
-llm = ChatOpenAI()
-
-# Create State schema
-class ChatState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-
-# Create node function
-def chat_node(state: ChatState):
-    # take entire chat history from state
-    messages = state['messages']
-    # send to llm
-    response = llm.invoke(messages)
-    # response store state
-    return {'messages': [response]}
-
-# create a database in sqlite
-connection = sqlite3.connect(database='chatbot.db', check_same_thread=False)
-# To support persistance
-checkpointer = SqliteSaver(conn=connection)
-
-# Create graph
-graph = StateGraph(ChatState)
-# add nodes
-graph.add_node('chat_node', chat_node)
-# Add edges
-graph.add_edge(START, 'chat_node')
-graph.add_edge('chat_node', END)
-# Compile graph
-chatbot = graph.compile(checkpointer=checkpointer)
-
-
+# ------------ Utility function -----------# (Used in frontend.py)
 def retrieve_all_unique_threads_from_db():
     all_thread_ids = set()
     for checkpoint in checkpointer.list(None):
@@ -47,3 +21,88 @@ def retrieve_all_unique_threads_from_db():
         if thread_id:
             all_thread_ids.add(thread_id)
     return list(all_thread_ids)
+# -----------------------------------------#
+
+# ----------------- LLM -------------------#
+llm = ChatOpenAI()
+# -----------------------------------------#
+
+# ------------------ Tools ----------------#
+search_tool = DuckDuckGoSearchRun(region="us-en")
+
+@tool
+def calculator(first_num: float, second_num: float, operation: str) -> dict:
+    """
+    Perform a basic arithmetic operation on two numbers.
+    Supported operations: add, sub, mul, div
+    """
+    try:
+        if operation == "add":
+            result = first_num + second_num
+        elif operation == "sub":
+            result = first_num - second_num
+        elif operation == "mul":
+            result = first_num * second_num
+        elif operation == "div":
+            if second_num == 0:
+                return {"error": "Division by zero is not allowed"}
+            result = first_num / second_num
+        else:
+            return {"error": f"Unsupported operation '{operation}'"}
+        
+        return {"first_num": first_num, "second_num": second_num, "operation": operation, "result": result}
+    except Exception as e:
+        return {"error": str(e)}
+
+@tool
+def get_stock_price(symbol: str) -> dict:
+    """
+    Fetch latest stock price for a given symbol (e.g. 'AAPL', 'TSLA') 
+    using Alpha Vantage with API key in the URL.
+    """
+    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey=MZMEVDB5A7A6IDUW"
+    r = requests.get(url)
+    return r.json()
+
+tools_list = [search_tool, get_stock_price, calculator]
+llm_with_tools = llm.bind_tools(tools_list)
+# -----------------------------------------#
+
+#------------ Create State schema ---------#
+class ChatState(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+# -----------------------------------------#
+
+# ---------- Create node function ---------#
+def chat_node(state: ChatState):
+    # take entire chat history from state
+    messages = state['messages']
+    # send to llm
+    response = llm_with_tools.invoke(messages)
+    # response store state
+    return {'messages': [response]}
+
+tool_node = ToolNode(tools_list)
+# -----------------------------------------#
+
+# ------ create a database in sqlite ------#
+connection = sqlite3.connect(database='chatbot.db', check_same_thread=False)
+# To support persistance
+checkpointer = SqliteSaver(conn=connection)
+# -----------------------------------------#
+
+# ------------ Create graph ---------------#
+graph = StateGraph(ChatState)
+
+# add nodes
+graph.add_node('chat_node', chat_node)
+graph.add_node("tools", tool_node)
+
+# Add edges
+graph.add_edge(START, 'chat_node')
+graph.add_conditional_edges("chat_node", tools_condition) # tools_condition: is a inbuilt function, which decides whether to go to tool_node or END node
+graph.add_edge('tools', 'chat_node')
+
+# Compile graph
+chatbot = graph.compile(checkpointer=checkpointer)
+# -----------------------------------------#

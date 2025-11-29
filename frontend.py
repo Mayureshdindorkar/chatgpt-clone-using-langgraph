@@ -3,10 +3,10 @@ import streamlit as st
 # st.session_state is a dictionary, which dont get erase when we press enter.
 # It gets erased only when we manually refresh the page manually.
 from backend import chatbot, retrieve_all_unique_threads_from_db
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 import uuid
 
-############## Utility functions ############
+#--------------- Utility functions -----------------#
 def generate_unique_thread_id():
     thread_id = uuid.uuid4()
     return thread_id
@@ -26,9 +26,9 @@ def load_chat_history_based_on_thread_id(thread_id):
     if state and state.values:
         return state.values.get('messages', [])
     return []
-#############################################
+#--------------------------------------------------#
 
-######## Storing the session state ##########
+#--------- Storing the session state #-------------#
 # Checking whether session_state dict contains a kay of name 'message_history'
 if 'message_history' not in st.session_state:
     st.session_state['message_history'] = []
@@ -40,9 +40,9 @@ if 'threads_list' not in st.session_state:
     st.session_state['threads_list'] = retrieve_all_unique_threads_from_db()
 
 add_thread_id_to_threads_list(st.session_state['thread_id'])
-#############################################
+#--------------------------------------------------#
 
-################## Side bar ##################
+#---------------- Side bar ------------------------#
 st.sidebar.title('LangGraph UI')
 
 if st.sidebar.button('New Chat'):
@@ -63,10 +63,9 @@ for thread_id in st.session_state['threads_list'][::-1]:
                 role = 'assistant'
             temp_messages.append({"role": role, "content": msg.content})
         st.session_state['message_history'] = temp_messages
+#--------------------------------------------------#
 
-##############################################
-
-############# Chat section ###################
+#------------------ Chat section ------------------#
 # Showing the past chat history on page
 for message in st.session_state['message_history']:
     with st.chat_message(message["role"]):
@@ -80,6 +79,7 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
+    # metadata.thread_id show the chats in the thread section of LangSmith
     CONFIG = {
         'configurable': {'thread_id': st.session_state['thread_id']},
         'metadata': {
@@ -97,14 +97,40 @@ if user_input:
     # with st.chat_message("assistant"):
     #     st.markdown(ai_message)
 
-    # With streaming
+    # With streaming [chatbot.stream() returns us a generator. We extract messages from it one by one using yield method]
     with st.chat_message("assistant"):
-        ai_message = st.write_stream(
-            message_chunk.content for message_chunk, metadata in chatbot.stream(
+        # Use a mutable holder so the generator can set/modify it
+        status_holder = {"box": None}
+
+        def show_only_ai_message():
+            for message_chunk, metadata in chatbot.stream(
                 {'messages': [HumanMessage(content=user_input)]},
                 config=CONFIG,
                 stream_mode="messages"
-            )
-        )
+            ):
+                if isinstance(message_chunk, ToolMessage):
+                    tool_name = getattr(message_chunk, "name", "tool")
+                    if status_holder["box"] is None:
+                        status_holder["box"] = st.status(
+                            f"🔧 Using `{tool_name}` …", expanded=False
+                        )
+                    else:
+                        status_holder["box"].update(
+                            label=f"🔧 Using `{tool_name}` …",
+                            state="running",
+                            expanded=False,
+                        )
+                    with status_holder["box"]:
+                        st.markdown(message_chunk.content)
+
+                # Show only Ai response on webpage, not tool responses
+                if isinstance(message_chunk, AIMessage):
+                    yield message_chunk.content
+        ai_message = st.write_stream(show_only_ai_message())
+
+        # Finalize only if a tool was actually used
+        if status_holder["box"] is not None:
+            status_holder["box"].update(label="✅ Tool finished", state="complete", expanded=False)
+
     st.session_state['message_history'].append({"role": "assistant", "content": ai_message})
-##############################################
+#--------------------------------------------------#
