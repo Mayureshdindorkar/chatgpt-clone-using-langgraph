@@ -1,7 +1,8 @@
-### ChatGPT Clone using LangGraph
+### ChatGPT Clone using LangGraph: [Live_Website](https://chatgpt-clone-using-langgraph.streamlit.app/)  
+
 ---
 ### Demo:  
-![Chatbot Demo Link](ss.png)
+[![Chatbot Demo Link](ss.png)](https://chatgpt-clone-using-langgraph.streamlit.app/)
 
 ---
 ### Graph Architecture:  
